@@ -1,0 +1,660 @@
+---
+title: "Population Pyramids I"
+subtitle: "Reading, manipulating, smoothing and plotting"
+author: "Pedro Delicado"
+date: 'Simposio de Estadística, Ibagué, Colombia. 2023'
+output: 
+  html_document:
+    number_sections: true
+    toc: true
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
+knitr::opts_chunk$set(echo = TRUE, eval=TRUE)
+```
+
+# Poulation Pyramids. Countries of the World
+
+## Reading data from United Nations
+
+Population data have been [downloaded from the web page](https://population.un.org/wpp/Download/Standard/Population/) of 
+
+> United Nations, Department of Economic and Social Affairs, Population Division (2022). *World Population Prospects 2022, Online Edition*.
+
+Several data formats are available there. We are working with these data:
+
+**Male and Female population by five-year age group, region, subregion and country, annually for 1950-2100 (thousands)**
+
+Two files have been downloaded:
+
+> `WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS_MALE.xlsx`
+> `WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS_FEMALE.xlsx`
+
+```{r}
+if (!file.exists("WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS.RData")){
+ library(readxl)
+  pp_names <- read_xlsx(
+    "WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS_MALE.xlsx",
+    sheet="Estimates", skip=16, n_max = 1)
+  ppM <- read_xlsx(
+    "WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS_MALE.xlsx",
+    sheet="Estimates", skip=1749, col_names = names(pp_names))
+  ppF <- read_xlsx(
+    "WPP2022_POP_F02_3_POPULATION_5-YEAR_AGE_GROUPS_FEMALE.xlsx",
+    sheet="Estimates", skip=1749, col_names = names(pp_names))
+  
+  # Removing rows corresponding to groups of countries or regions
+  IndGroups <- which(is.na(ppM$`ISO2 Alpha-code`))
+  ppM <- ppM[-IndGroups,]
+  ppF <- ppF[-IndGroups,]
+  rm(IndGroups)
+  save(ppM,ppF,file="WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS.RData") 
+}else{
+  load("WPP2022_POP_F02_2_POPULATION_5-YEAR_AGE_GROUPS.RData")
+}
+```
+
+```{r}
+CtryName <- unique(ppM$`Region, subregion, country or area *`)
+CtryISO3 <- unique(ppM$`ISO3 Alpha-code`)
+CtryISO2 <- unique(ppM$`ISO2 Alpha-code`)
+Year <- unique(ppM$Year)
+AgeCh <- names(ppM)[12:32]
+
+nc <- length(CtryISO2)
+ny <- length(Year)
+nag <- length(AgeCh)
+Age <- (1:nag)*5 - 2.5
+
+Country <- data.frame(Name=CtryName, ISO3=CtryISO3, ISO2=CtryISO2)
+row.names(Country) <- CtryISO2
+```
+
+# Ploting and manipulating population pyramids 
+
+As an example, here we have the population pyramids of Colombia and Spain for year `r (year <- 2021)`:
+
+```{r,fig.height=4,fig.width=6}
+par(mfrow=c(1,2))
+year <- 2021
+for (ctry in c('CO','ES')){
+  row_ctry <- which((ppM$`ISO2 Alpha-code`==ctry)&(ppM$Year==year))
+  name.country <- Country[ctry,1]
+  male   <- as.numeric(ppM[row_ctry, 12:32])
+  female <- as.numeric(ppF[row_ctry, 12:32])
+  max_x <- max(c(male, female))
+  barplot(-male,width=5,hor=T,beside=F,space=0,xlim=max_x*1.1*c(-1,1), 
+          las=1, main=paste(name.country," (",year,")",sep=""),
+          ylab="Age",
+          xlab="    Male         Female")
+  barplot(female,width=5,hor=T,beside=F,space=0,add=TRUE)
+  abline(h=0,col=8)
+  axis(2,labels=NULL,las=1)
+}
+```
+
+
+We store the population pyramids data as 3 dimensional arrays,
+**country** by **calendar_year** by **age**:
+$$
+\{X_M(c,t,a), X_F(c,t,a)\},
+$$
+where $c$ indicates the country (there are a total of 236 countries or areas),
+$t\in \{1950,\dots,2021\}$ indicates the calendar year (72 years),
+and $a\in\{2.5:5:102.5\}$ indicates the mid-point of each age interval,
+\[
+[0,5), \dots, [95,100),[100,\infty),
+\]
+except the last one. 
+
+In fact, we pack together the Males and Females cubes into a unique large cube. For $a=-102.5:5:102.5$, let 
+$$
+X(c,t,a)=
+\left\{
+\begin{array}{lcl}
+X_M(c,t,-a) & if & a<0 \\
+X_F(c,t,a) & if & a>0 
+\end{array}
+\right. 
+$$
+
+From the original population counts, we define **relative population pyramids**:
+$$
+R(c,t,a)=\frac{X(c,t,a)}{\sum_{s=-102.5}^{102.5} X(c,t,s)}.
+$$
+
+```{r}
+egAge <- c(-rev(Age),Age)
+
+PopPyr <- array(data=NA, dim=c(nc,ny,2*nag),
+                    dimnames = list(Country=CtryISO2, 
+                                    Year=as.character(Year),
+                                    M_agAge_F=c(paste0("M_",rev(AgeCh)),
+                                      paste0("F_",AgeCh)) ) )
+PopPyrRel <- PopPyr
+#c("Country", "Year", "-Age (M)        Age (F)")
+for (i in (1:nc)){
+  Ind_ctry <- which(ppM$`ISO2 Alpha-code`==CtryISO2[i])
+  PopPyr[i,,nag:1] <- as.matrix(ppM[Ind_ctry,12:32])
+  PopPyr[i,,nag+(1:nag)] <- as.matrix(ppF[Ind_ctry,12:32])
+  PopPyrRel[i,,] <- t(apply(PopPyr[i,,],1,function(x){x/sum(x)}))
+}
+```
+
+A way to represent the joint distribution of **(Sex,Age)**, alternative to population pyramid, is what we could call an
+**age-symmetric population histogram**: 
+a bar-plot of the values of $X(c,t,a)$ or $R(c,t,a)$, for $a\in\{2.5:5:102.5\}$ and a fix country $c$ and a calendar year $t$. It is the result of placing the male and female halves of a population pyramid lying down and facing each other at the base.
+
+We do it for Colombia and Spain, year 2021:
+
+```{r,fig.height=4.5,fig.width=6}
+par(mfrow=c(2,1), mar=c(3, 4, 3, 1) + 0.1)
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  barplot(PopPyr[ctry,as.character(year),],width=5,
+          hor=F,beside=F,space=0,
+          las=2, main=paste(name.country," (",year,")",sep=""),
+          ylab="Population",
+          xlab="",cex.names=.5)
+  abline(v=105,lty=2,lwd=2)
+}
+```
+
+
+Now, we plot the relative population pyramids for these two countries, and then we show the corresponding age-symmetric population histograms: 
+
+```{r,fig.height=4,fig.width=6}
+par(mfrow=c(1,2))
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  male  <-as.numeric(PopPyrRel[ctry,as.character(year),nag:1])/5
+  female<-as.numeric(PopPyrRel[ctry,as.character(year),nag+(1:nag)])/5
+  max_x <- max(c(male, female))
+  barplot(-male,width=5,hor=T,beside=F,space=0,
+          xlim=max_x*1.1*c(-1,1), 
+          las=1, main=paste(name.country," (",year,")",sep=""),
+          ylab="Age",
+          xlab="    Male         Female")
+  barplot(female,width=5,hor=T,beside=F,space=0,add=TRUE)
+  abline(h=0,col=8)
+  axis(2,labels=NULL,las=1)
+}
+```
+
+Observe that the values of the population pyramids are now in the *density scale*: 
+the sum of the areas of a population pyramid bars is equal to 1. 
+
+```{r,fig.height=4.5,fig.width=6}
+par(mfrow=c(2,1), mar=c(3, 4, 3, 1) + 0.1)
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  barplot(PopPyrRel[ctry,as.character(year),]/5,width=5,
+          hor=F,beside=F,space=0,
+          las=2, main=paste(name.country," (",year,")",sep=""),
+          ylab="Density",
+          xlab="",cex.names=.5, cex.axis = .75)
+  abline(v=105,lty=2,lwd=2)
+}
+```
+Observe that the values of the age-symmetric population histograms are now in the *density scale*: 
+the sum of the areas of an age-symmetric population histogram bars is equal to 1. 
+That is, the integral of an age-symmetric population histogram is equal to 1. 
+
+Therefore, **age-symmetric population histograms are density functions**. 
+
+# Smoothing the population pyramids 
+
+We apply spline smoothing to the age-symmetric population histograms with. This way we obtain smooth functions which we evaluate for age year by year. 
+
+```{r,fig.height=4.5,fig.width=6}
+max_age <- max(Age)
+egAge.1 <- seq(-max_age+2,max_age-2,by=1)
+
+par(mfrow=c(2,1), mar=c(3, 4, 3, 1) + 0.1)
+max_age <- nag*5
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  pp <- as.numeric(PopPyrRel[ctry,as.character(year),])/5
+  aux.spl <- smooth.spline(x=egAge,y=pp)
+  pp.q.sm <- aux.spl$y 
+  pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+  barplot(PopPyrRel[ctry,as.character(year),]/5,width=5,
+          hor=F,beside=F,space=0,
+          las=2, main=paste(name.country," (",year,")",sep=""),
+          ylab="Density",
+          xlab="",cex.names=.5, cex.axis = .75)
+  abline(v=105,lty=2,lwd=2)
+  lines(max_age+egAge.1,pp.q.sm.1,lwd=2,col=2)
+}
+```
+
+```{r,fig.height=4,fig.width=6}
+par(mfrow=c(1,2))
+max_age <- max(Age)
+egAge.1 <- seq(-max_age+2,max_age-2,by=1)
+nag.1 <- length(egAge.1)
+nag.1.half <- round((nag.1+1)/2)
+
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  
+  pp <- as.numeric(PopPyrRel[ctry,as.character(year),])/5
+  aux.spl <- smooth.spline(x=egAge,y=pp)
+  pp.q.sm <- aux.spl$y 
+  pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+
+  male  <-as.numeric(PopPyrRel[ctry,as.character(year),nag:1])/5
+  female<-as.numeric(PopPyrRel[ctry,as.character(year),nag+(1:nag)])/5
+  max_x <- max(c(male, female))
+  barplot(-male,width=5,hor=T,beside=F,space=0,
+          xlim=max_x*1.1*c(-1,1), 
+          las=1, main=paste(name.country," (",year,")",sep=""),
+          ylab="Age",
+          xlab="    Male         Female")
+  barplot(female,width=5,hor=T,beside=F,space=0,add=TRUE)
+  abline(h=0,col=8)
+  lines(-pp.q.sm.1[nag.1.half:1],-egAge.1[nag.1.half:1],lwd=2,col=2)
+  lines(pp.q.sm.1[nag.1.half:nag.1],egAge.1[nag.1.half:nag.1],lwd=2,col=2)
+  axis(2,labels=NULL,las=1)
+}
+```
+
+```{r,fig.height=4.5,fig.width=6}
+max_age <- max(Age)
+egAge.1 <- seq(-max_age+2.5,max_age-2.5,by=1)
+
+par(mfrow=c(2,1), mar=c(3, 4, 3, 1) + 0.1)
+max_age <- nag*5
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  pp <- as.numeric(PopPyrRel[ctry,as.character(year),])/5
+  aux.spl <- smooth.spline(x=egAge,y=pp)
+  pp.q.sm <- aux.spl$y 
+  pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+  plot(egAge.1,pp.q.sm.1, type="l", lwd=2, col=1,
+          main=paste(name.country," (",year,")",sep=""),
+          ylab="Density")
+  abline(v=0,lty=2,lwd=2)
+}
+```
+
+```{r,fig.height=4,fig.width=6}
+par(mfrow=c(1,2))
+max_age <- max(Age)
+egAge.1 <- seq(-max_age+2,max_age-2,by=1)
+nag.1 <- length(egAge.1)
+nag.1.half <- round((nag.1+1)/2)
+
+year <- 2021
+for (ctry in c('CO','ES')){
+  name.country <- Country[ctry,1]
+  
+  pp <- as.numeric(PopPyrRel[ctry,as.character(year),])/5
+  aux.spl <- smooth.spline(x=egAge,y=pp)
+  pp.q.sm <- aux.spl$y 
+  pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+
+  male  <-as.numeric(PopPyrRel[ctry,as.character(year),nag:1])/5
+  female<-as.numeric(PopPyrRel[ctry,as.character(year),nag+(1:nag)])/5
+  max_x <- max(c(male, female))
+  plot(-pp.q.sm.1[nag.1.half:1],-egAge.1[nag.1.half:1],
+          type="l", lwd=2, col=1,
+          xlim=max_x*1.1*c(-1,1), 
+          main=paste(name.country," (",year,")",sep=""),
+          ylab="Age",
+          xlab="    Male         Female")
+  lines(pp.q.sm.1[nag.1.half:nag.1],egAge.1[nag.1.half:nag.1],
+        lwd=2,col=1)
+  abline(h=0,col=8)
+  abline(v=0,col=2,lwd=1.5,lty=2)
+}
+```
+
+Now, we smooth all the population pyramids in our cube population pyramid data sets:
+
+```{r smoothing}
+SmoothPopPyr <- function(PopPyr.5, 
+                         egAge.5=seq(-102.5,102.5,by=5), 
+                         egAge.1=seq(-102.5,102.5,by=1)){
+  pp <- as.numeric(PopPyr.5)
+  aux.spl <- smooth.spline(x=egAge.5,y=pp)
+  pp.sm.1 <- predict(aux.spl,egAge.1)$y
+  return(pp.sm.1)
+}
+if (!file.exists("Smoothed_Poulation_Pyramids.RData")){
+  PopPyrSm <- array(data=NA, dim=c(nc,ny,nag.1),
+                      dimnames = list(Country=CtryISO2, 
+                                      Year=as.character(Year),
+                                      agAge=NULL))
+  PopPyrRelSm <- PopPyrSm
+  
+  for (ctry in CtryISO2){
+    for (year in Year){
+      PopPyrSm[ctry,as.character(year),] <- 
+        SmoothPopPyr(PopPyr[ctry,as.character(year),]/5, 
+                     egAge.5 = egAge, egAge.1 = egAge.1)
+      PopPyrRelSm[ctry,as.character(year),] <-
+        SmoothPopPyr(PopPyrRel[ctry,as.character(year),]/5,
+                     egAge.5 = egAge, egAge.1 = egAge.1)
+    }
+  }
+  save(PopPyrSm, PopPyrRelSm, Year, egAge.1, Country,
+       file="Smoothed_Poulation_Pyramids.RData")
+}else{
+  load("Smoothed_Poulation_Pyramids.RData")
+}
+```
+
+
+# Many smoothed population pyramids at the same plot
+
+## Many smoothed age-symmetric population histograms
+
+First we plot many smoothed age-symmetric population histograms at the same graph:
+
+```{r}
+par(mfrow=c(2,2),mar=c(3,2,2,1))
+matplot(egAge.1,t(PopPyrSm['CO',,]), type="l", lty=1,
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['CO',,]),type="l", lty=1,
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrSm['CO',,]), type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['CO',,]),type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+```
+
+
+```{r}
+par(mfrow=c(2,2),mar=c(4,4,2,1))
+matplot(egAge.1,t(PopPyrSm['ES',,]), type="l", lty=1,
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['ES',,]),type="l", lty=1,
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrSm['ES',,]), type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['ES',,]),type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+```
+
+
+```{r}
+par(mfrow=c(2,2),mar=c(4,4,2,1))
+matplot(egAge.1,t(PopPyrSm['CO',,]), type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['CO',,]), type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Population (1000)",
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrSm['ES',,]),type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot(egAge.1,t(PopPyrRelSm['ES',,]),type="l", lty=1, 
+        col=rainbow(length(Year), start=.2, end=1),
+        xlab="egAge",ylab="Density",
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+```
+
+### Alternative graphical representations
+
+```{r perspective_plots,fig.width=8,fig.height=8}
+par(mfrow=c(2,2),mar=c(1,1,1,1))
+persp(egAge.1,Year, t(PopPyrSm['CO',,]),
+      theta = 30, phi = 30, expand = 0.5, col = "lightblue", 
+      zlab="Population (1000)", main="Colombia. Population")
+persp(egAge.1,Year, t(PopPyrRelSm['CO',,]),
+      theta = 30, phi = 30, expand = 0.5, col = "lightblue", 
+      zlab="Density", main="Colombia. Relative Population")
+persp(egAge.1,Year, t(PopPyrSm['ES',,]),
+      theta = 30, phi = 30, expand = 0.5, col = "lightblue", 
+      zlab="Population (1000)", main="Spain. Population")
+persp(egAge.1,Year, t(PopPyrRelSm['ES',,]),
+      theta = 30, phi = 30, expand = 0.5, col = "lightblue", 
+      zlab="Density", main="Spain. Relative Population")
+```
+
+```{r, echo=FALSE, eval=FALSE}
+filled.contour(egAge.1, Year, t(PopPyrSm['CO',,]), asp=NA,
+      color.palette = terrain.colors, main="Colombia. Population")
+filled.contour(egAge.1, Year, t(PopPyrRelSm['CO',,]), asp=NA,
+      color.palette = terrain.colors, main="Colombia. Density")
+filled.contour(egAge.1, Year, t(PopPyrSm['ES',,]), asp=NA,
+      color.palette = terrain.colors, main="Spain. Population")
+filled.contour(egAge.1, Year, t(PopPyrRelSm['ES',,]), asp=NA,
+      color.palette = terrain.colors, main="Spain. Density")
+```
+
+```{r, fig.width=8,fig.height=5.2}
+par(mfrow=c(2,2))
+image(egAge.1, Year, t(PopPyrSm['CO',,]), asp=1, xlab="", ylab="",
+      col = terrain.colors(22), main="Colombia. Population")
+image(egAge.1, Year, t(PopPyrRelSm['CO',,]), asp=1, xlab="", ylab="",
+      col=terrain.colors(22), main="Colombia. Density")
+image(egAge.1, Year, t(PopPyrSm['ES',,]), asp=1, xlab="", ylab="",
+      col = terrain.colors(22), main="Spain. Population")
+image(egAge.1, Year, t(PopPyrRelSm['ES',,]), asp=1, xlab="", ylab="",
+      col=terrain.colors(22), main="Spain. Density")
+```
+
+## Many smoothed population pyramids
+Now we plot many smoothed population pyramids at the same graph:
+
+```{r}
+# matplot_pop_pyr_1y matplot for a population pyramids dataset
+#                    with precision of 1 yr
+# Arguments:
+#
+# age:   ages at which each row of matrix_pop_pyr is evaluated 
+# matrix_pop_pyr 
+#    Each row:    a population pyramid, first Male, then Female
+#    Each column: an age, negative for Male, positive for Female
+# orderM:  -1 (1) if Male is sorted in decreasing (increasing) order
+matplot_pop_pyr_1y <- 
+  function(age=NULL, matrix_pop_pyr, orderM = -1, 
+           col=1:8, colM=col, colF=col, lty=1:8,
+           main="",
+           xlim=max(abs(matrix_pop_pyr)), ...){
+  max_age <- dim(matrix_pop_pyr)[2]/2
+  if (orderM==-1) 
+    matrix_pop_pyr[,1:max_age] <- matrix_pop_pyr[,max_age:1]
+  n <- dim(matrix_pop_pyr)[1]
+  pop_pyr <- as.numeric(matrix_pop_pyr[1,])
+  if (is.null(age)){
+    age <- 1:max_age -1
+  } else {
+    age <- age[age>0]
+  }
+  plot(-pop_pyr[1:max_age],age, type="l", lwd=1, col=colM[1],
+       lty=lty[1],
+       xlim=xlim*c(-1,1), ylim=c(0,100),
+       xlab="",
+       ylab="Age",
+       main=main,
+       axes=FALSE, ...)
+  lines(pop_pyr[(max_age+1):(2*max_age)],age, lwd=1, lty=lty[1], col=colF[1], ...)
+  abline(h=0)
+  abline(v=0,col=8)
+  segments(x0=rep(-.0005,5),y0=seq(20,100,by=20),x1=rep(.0005,5),col=8)
+  axis(side=2, at=seq(0,100,by=20))
+  #axis(side=1, at=seq(-.02,.02,by=.005), pos=0,
+  #     labels=c(.02,NA,.01,NA,0,NA,.01,NA,.02))
+  axis(side=1)
+  legend("topleft","Male",bty="n")
+  legend("topright","Female",bty="n")
+  
+  for (i in 2:n){
+    lines(-matrix_pop_pyr[i,1:max_age],age, lwd=1, lty=lty[i%%length(lty)+1],
+          col=colM[i%%length(col)+1], ...)
+    lines(matrix_pop_pyr[i,(max_age+1):(2*max_age)],age, lwd=1, lty=lty[i%%length(lty)+1],
+          col=colF[i%%length(col)+1], ...)
+  }
+}
+
+# lines_pop_pyr_1y Adds to an existing plot a lines representing 
+#                  a population pyramids, precision of 1 yr
+# Arguments:
+#
+# age:   ages at which each row of matrix_pop_pyr is evaluated 
+# pop_pyr:  a population pyramid, first Male, then Female
+# orderM:  -1 (1) if Male is sorted in decreasing (increasing) order
+lines_pop_pyr <- function(age=NULL, pop_pyr, orderM = -1, 
+                          lty=1, lwd=1, 
+                          col=1, colM=col, colF=col, ...){
+  pop_pyr <- as.numeric(pop_pyr)
+  max_age <- length(pop_pyr)/2
+  if (orderM==-1) pop_pyr[1:max_age] <- pop_pyr[max_age:1]
+  if (is.null(age)) age <- 1:max_age -1
+  lines(-pop_pyr[1:max_age],age, lwd=lwd, lty=lty, col=colM, ...)
+  lines(pop_pyr[(max_age+1):(2*max_age)],age, lwd=lwd, lty=lty, col=colF, ...)
+}
+``` 
+
+
+```{r,fig.height=7}
+par(mfrow=c(2,2),mar=c(4,4,2,1))
+matplot_pop_pyr_1y(egAge.1,PopPyrSm['CO',,], lty=1, 
+                    xlim=450,
+       col=rainbow(length(Year), start=.2, end=1),
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot_pop_pyr_1y(egAge.1,PopPyrRelSm['CO',,], lty=1, 
+                   xlim=.02,
+        col=rainbow(length(Year), start=.2, end=1),
+        main=paste0(Country['CO',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot_pop_pyr_1y(egAge.1,PopPyrSm['ES',,], lty=1, 
+                   xlim=450,
+        col=rainbow(length(Year), start=.2, end=1),
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+matplot_pop_pyr_1y(egAge.1,PopPyrRelSm['ES',,], lty=1,
+                   xlim=.02,
+        col=rainbow(length(Year), start=.2, end=1),
+        main=paste0(Country['ES',1],", ",Year[1]," to ",rev(Year)[1]),
+        cex.main=.75,cex.lab=.75,cex.axis=.75)
+```
+
+### Animated graphics for population pyramids
+
+```{r}
+library(gifski)
+```
+
+```{r anim_1, animation.hook="gifski", interval=0.2, fig.height=6,fig.width=8}
+par(mfrow=c(2,2),mar=c(4,4,2,1))
+max_x <- 2250
+for (year in Year) {
+  for (ctry in c('CO','ES')){
+    name.country <- Country[ctry,1]
+    male  <-as.numeric(PopPyr[ctry,as.character(year),nag:1])
+    female<-as.numeric(PopPyr[ctry,as.character(year),nag+(1:nag)])
+    barplot(-male,width=5,hor=T,beside=F,space=0,
+            xlim=max_x*1.1*c(-1,1), 
+            las=1, main=paste(name.country," (",year,")",sep=""),
+            ylab="Age",
+            xlab="    Male         Female")
+    barplot(female,width=5,hor=T,beside=F,space=0,add=TRUE)
+    abline(h=0,col=8)
+    axis(2,labels=NULL,las=1)
+    text(-max_x,100,
+      paste("Population:", round(sum(male+female)/1e3,1),"Mill"),
+      pos=4)
+  }
+  for (ctry in c('CO','ES')){
+    name.country <- Country[ctry,1]
+    
+    pp <- as.numeric(PopPyr[ctry,as.character(year),])
+    aux.spl <- smooth.spline(x=egAge,y=pp)
+    pp.q.sm <- aux.spl$y 
+    pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+  
+    male  <-as.numeric(PopPyr[ctry,as.character(year),nag:1])
+    female<-as.numeric(PopPyr[ctry,as.character(year),nag+(1:nag)])
+    plot(-pp.q.sm.1[nag.1.half:1],-egAge.1[nag.1.half:1],
+            type="l", lwd=2, col=1,
+            xlim=max_x*1.1*c(-1,1), 
+            main=paste(name.country," (",year,")",sep=""),
+            ylab="Age",
+            xlab="    Male         Female")
+    lines(pp.q.sm.1[nag.1.half:nag.1],egAge.1[nag.1.half:nag.1],
+          lwd=2,col=1)
+    abline(h=0,col=8)
+    abline(v=0,col=2,lwd=1.5,lty=2)
+  }
+}
+```
+
+```{r anim_2, animation.hook="gifski", interval=0.2, fig.height=6,fig.width=8}
+par(mfrow=c(2,2),mar=c(4,4,2,1))
+max_x <- 0.02
+for (year in Year) {
+  for (ctry in c('CO','ES')){
+    name.country <- Country[ctry,1]
+    male  <-as.numeric(PopPyrRel[ctry,as.character(year),nag:1])/5
+    female<-as.numeric(PopPyrRel[ctry,as.character(year),nag+(1:nag)])/5
+    barplot(-male,width=5,hor=T,beside=F,space=0,
+            xlim=max_x*1.1*c(-1,1), 
+            las=1, main=paste(name.country," (",year,")",sep=""),
+            ylab="Age",
+            xlab="    Male         Female")
+    barplot(female,width=5,hor=T,beside=F,space=0,add=TRUE)
+    abline(h=0,col=8)
+    axis(2,labels=NULL,las=1)
+  }
+  for (ctry in c('CO','ES')){
+    name.country <- Country[ctry,1]
+    
+    pp <- as.numeric(PopPyrRel[ctry,as.character(year),])/5
+    aux.spl <- smooth.spline(x=egAge,y=pp)
+    pp.q.sm <- aux.spl$y 
+    pp.q.sm.1 <- predict(aux.spl,egAge.1)$y
+  
+    male  <-as.numeric(PopPyrRel[ctry,as.character(year),nag:1])/5
+    female<-as.numeric(PopPyrRel[ctry,as.character(year),nag+(1:nag)])/5
+    plot(-pp.q.sm.1[nag.1.half:1],-egAge.1[nag.1.half:1],
+            type="l", lwd=2, col=1,
+            xlim=max_x*1.1*c(-1,1), 
+            main=paste(name.country," (",year,")",sep=""),
+            ylab="Age",
+            xlab="    Male         Female")
+    lines(pp.q.sm.1[nag.1.half:nag.1],egAge.1[nag.1.half:nag.1],
+          lwd=2,col=1)
+    abline(h=0,col=8)
+    abline(v=0,col=2,lwd=1.5,lty=2)
+  }
+}
+```
