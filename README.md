@@ -6,7 +6,7 @@ Demographic data (population pyramids, mortality and fertility rates, life expec
 The outline of this short course is as follows:
 1. Definition of basic concepts in Demography.
 2. Some demographic data repositories.
-3. Three applications of Functional Data Analysis in Demography in Demography:
+3. Three applications of Functional Data Analysis in Demography:
     1. Mortality rates forecasting.
     2. Clustering population pyramids evolving over time.
     3. Age-specific fertility rates dimensionality reduction.
