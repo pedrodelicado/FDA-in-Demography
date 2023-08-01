@@ -17,7 +17,7 @@ as well as other where I have participated directly (Delicado 2011, Chen et al. 
 ### Course materials
 This [zip file](https://www.dropbox.com/scl/fi/l8p2aeb6cc1q76yc54vjl/FDA_in_Demography.zip?rlkey=k62d7sgkjznl9l5t915vsbflx&dl=0) contains:
 - The slides of the course (pfd file).
-- Several datasets used bu the example Rmd files.
+- Several datasets used by the example Rmd files.
 
 ### Bibliography
 - Chen, K., Delicado, P. and Müller, H.-G. (2017). Modelling function-valued stochastic processes, with applications to fertility dynamics. *Journal of the Royal Statistical Society: Series B (Statistical Methodology)*, **79**, 177-196.
